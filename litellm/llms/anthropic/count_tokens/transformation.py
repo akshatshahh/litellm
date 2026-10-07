@@ -13,9 +13,27 @@ from pydantic import JsonValue, TypeAdapter
 from litellm.constants import ANTHROPIC_TOKEN_COUNTING_BETA_VERSION
 from litellm.llms.anthropic.common_utils import merge_anthropic_beta_headers
 from litellm.llms.anthropic.wif import resolve_anthropic_base
+from litellm.types.llms.openai import ChatCompletionImageObject
 
 _COUNT_REQUEST: Final = TypeAdapter(dict[str, JsonValue])
+_IMAGE_BLOCK: Final = TypeAdapter(ChatCompletionImageObject)
 COUNT_TOKEN_OPTION_NAMES: Final = ("thinking", "tool_choice", "output_config")
+
+
+def _count_content(content: JsonValue) -> JsonValue:
+    if isinstance(content, list):
+        return [_count_content(block) for block in content]
+    if not isinstance(content, dict):
+        return content
+    if content.get("type") == "image_url":
+        from litellm.litellm_core_utils.prompt_templates.factory import create_anthropic_image_param
+
+        image_block: Final = _IMAGE_BLOCK.validate_python(content)
+        image: Final = _COUNT_REQUEST.validate_python(create_anthropic_image_param(image_block["image_url"]))
+        return {**{key: value for key, value in content.items() if key not in {"type", "image_url"}}, **image}
+    if content.get("type") == "tool_result" and "content" in content:
+        return {**content, "content": _count_content(content["content"])}
+    return content
 
 
 class AnthropicCountTokensConfig:
@@ -62,7 +80,7 @@ class AnthropicCountTokensConfig:
             MappingProxyType(
                 {
                     "model": model,
-                    "messages": messages,
+                    "messages": [{**message, "content": _count_content(message["content"])} for message in messages],
                     **MappingProxyType(
                         {key: value for key, value in (("system", system), ("tools", tools)) if value is not None}
                     ),

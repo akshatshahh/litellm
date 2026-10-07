@@ -1,12 +1,107 @@
+from copy import deepcopy
+from typing import Final
+
 import httpx
 import pytest
 import respx
+from pydantic import JsonValue
 
 import litellm
 from litellm.llms.anthropic.count_tokens.handler import AnthropicCountTokensHandler
 from litellm.llms.anthropic.count_tokens.transformation import (
     AnthropicCountTokensConfig,
 )
+from litellm.llms.azure_ai.anthropic.count_tokens.transformation import (
+    AzureAIAnthropicCountTokensConfig,
+)
+
+
+@pytest.mark.parametrize(
+    "config_type", (AnthropicCountTokensConfig, AzureAIAnthropicCountTokensConfig)
+)
+@pytest.mark.parametrize(
+    ("image_url", "source"),
+    (
+        ("data:image/png;base64,aW1hZ2U=", {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}),
+        ({"url": "data:image/png;base64,aW1hZ2U="}, {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}),
+        ("https://example.test/image.png", {"type": "url", "url": "https://example.test/image.png"}),
+        (
+            {"url": "https://example.test/image.png", "detail": "high"},
+            {"type": "url", "url": "https://example.test/image.png"},
+        ),
+    ),
+)
+def test_count_translates_openai_images_without_mutating_input(
+    config_type: type[AnthropicCountTokensConfig],
+    image_url: str | dict[str, JsonValue],
+    source: dict[str, JsonValue],
+) -> None:
+    cache_control: Final[dict[str, JsonValue]] = {"type": "ephemeral"}
+    messages: Final[list[dict[str, JsonValue]]] = [{
+        "role": "user", "content": [
+            {"type": "text", "text": "Count this image"},
+            {"type": "image_url", "image_url": image_url, "cache_control": cache_control},
+        ],
+    }]
+    original: Final = deepcopy(messages)
+    result: Final = config_type().transform_request_to_count_tokens(
+        model="claude-opus-5-5", messages=messages
+    )
+
+    assert result == {
+        "model": "claude-opus-5-5", "messages": [{
+            "role": "user", "content": [
+                {"type": "text", "text": "Count this image"},
+                {"type": "image", "source": source, "cache_control": cache_control},
+            ],
+        }],
+    }
+    assert messages == original
+
+
+@pytest.mark.parametrize(
+    "config_type", (AnthropicCountTokensConfig, AzureAIAnthropicCountTokensConfig)
+)
+def test_count_normalizes_nested_tool_images_and_preserves_native_fields(
+    config_type: type[AnthropicCountTokensConfig],
+) -> None:
+    openai_image: Final[dict[str, JsonValue]] = {
+        "type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U="}
+    }
+    native_image: Final[dict[str, JsonValue]] = {
+        "type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}
+    }
+    assistant: Final[dict[str, JsonValue]] = {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "inspect screenshot", "signature": "fixture-signature"},
+        {"type": "tool_use", "id": "read-1", "name": "Read", "input": {"content": [openai_image]}},
+    ]}
+    tool_result: Final[dict[str, JsonValue]] = {
+        "type": "tool_result", "tool_use_id": "read-1", "is_error": False,
+        "content": [{"type": "text", "text": "Screenshot"}, native_image, openai_image],
+        "cache_control": {"type": "ephemeral"},
+    }
+    messages: Final[list[dict[str, JsonValue]]] = [
+        assistant, {"role": "user", "content": [native_image, tool_result]}
+    ]
+    tools: Final[list[dict[str, JsonValue]]] = [{
+        "name": "Read", "input_schema": {"type": "object", "examples": [openai_image]}
+    }]
+    system: Final[JsonValue] = [{"type": "text", "text": "policy", "cache_control": {"type": "ephemeral"}}]
+    options: Final[dict[str, JsonValue]] = {
+        "thinking": {"type": "adaptive"}, "tool_choice": {"type": "auto"}, "output_config": {"effort": "high"}
+    }
+    original: Final = deepcopy((messages, tools, system, options))
+    result: Final = config_type().transform_request_to_count_tokens(
+        model="claude-opus-5-5", messages=messages, tools=tools, system=system, optional_params=options
+    )
+
+    assert result == {
+        "model": "claude-opus-5-5", "system": system, "tools": tools, **options,
+        "messages": [assistant, {"role": "user", "content": [native_image, {
+            **tool_result, "content": [{"type": "text", "text": "Screenshot"}, native_image, native_image]
+        }]}],
+    }
+    assert (messages, tools, system, options) == original
 
 
 def test_transform_basic_request():
