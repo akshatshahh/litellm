@@ -421,6 +421,10 @@ class CredentialLiteLLMParams(LiteLLMBaseModel):
     openai_identity_provider_id: str | None = None
     openai_service_account_id: str | None = None
     openai_identity_token_file: str | None = None
+    token_exchange_endpoint: str | None = None
+    token_exchange_profile: str | None = None
+    token_exchange_scope: str | None = None
+    token_exchange_audience: str | None = None
 
 
 def server_owned_wif_fields_present(fields: Mapping[str, object]) -> tuple[str, ...]:

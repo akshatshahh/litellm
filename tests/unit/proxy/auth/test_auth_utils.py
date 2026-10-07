@@ -37,6 +37,54 @@ from litellm.router import Router
 from litellm.types.workload_identity import ANTHROPIC_WIF_KWARGS_KEYS, OPENAI_WIF_KWARGS_KEYS
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "token_exchange_endpoint",
+        "token_exchange_profile",
+        "token_exchange_scope",
+        "token_exchange_audience",
+    ],
+)
+def test_token_exchange_settings_in_request_body_are_rejected(field: str) -> None:
+    with pytest.raises(ValueError, match="Rejected Request") as error:
+        is_request_body_safe(
+            request_body={"model": "microsoft_365_copilot/chat", field: "attacker-chosen"},
+            general_settings={},
+            llm_router=None,
+            model="microsoft_365_copilot/chat",
+        )
+
+    assert field in str(error.value)
+
+
+def test_admin_can_opt_in_to_token_exchange_endpoint_for_a_deployment() -> None:
+    router: Final = Router(
+        model_list=[
+            {
+                "model_name": "microsoft_365_copilot/chat",
+                "litellm_params": {
+                    "model": "microsoft_365_copilot/chat",
+                    "configurable_clientside_auth_params": ["token_exchange_endpoint"],
+                },
+            }
+        ]
+    )
+
+    assert (
+        is_request_body_safe(
+            request_body={
+                "model": "microsoft_365_copilot/chat",
+                "token_exchange_endpoint": "https://identity.example.com/token",
+            },
+            general_settings={},
+            llm_router=router,
+            model="microsoft_365_copilot/chat",
+        )
+        is True
+    )
+
+
 @pytest.mark.parametrize("param", sorted(ANTHROPIC_WIF_KWARGS_KEYS | OPENAI_WIF_KWARGS_KEYS))
 def test_every_wif_kwarg_key_is_refused_from_a_request_body(param: str):
     """Every key the kwargs funnel carries into litellm_params selects a server-side secret or the
